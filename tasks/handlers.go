@@ -10,14 +10,16 @@ import (
 	"strconv"
 
 	"github.com/julienschmidt/httprouter"
+	"github.com/Nerzal/gocloak/v11"
 )
 
-func NewHandler(database *sql.DB) *handler {
-	return &handler{database: database}
+func NewHandler(database *sql.DB, keycloak gocloak.GoCloak) *handler {
+	return &handler{database: database, keycloak: keycloak}
 }
 
 type handler struct {
 	database *sql.DB
+	keycloak gocloak.GoCloak
 }
 
 func (h *handler) GetTasks(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
@@ -29,7 +31,13 @@ func (h *handler) GetTasks(w http.ResponseWriter, r *http.Request, _ httprouter.
 	default:
 	}
 
-	rows, errQuery := h.database.Query("SELECT id, description, difficulty, done FROM tasks")
+	userInfo, err := util.AuthorizeUser(ctx, h.keycloak, r.Header.Get("Authorization"))
+	if err != nil {
+		util.WriteErrorResponse(w, "User not authorized to use this function: " + err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	rows, errQuery := h.database.Query("SELECT id, description, difficulty, done FROM tasks WHERE owner_identifier = $1", userInfo.PreferredUsername)
 	if errQuery != nil {
 		util.WriteErrorResponse(w, "Error retrieving tasks from database: " + errQuery.Error(), http.StatusInternalServerError)
 		return
@@ -58,6 +66,12 @@ func (h *handler) GetTask(w http.ResponseWriter, r *http.Request, params httprou
 	default:
 	}
 
+	userInfo, err := util.AuthorizeUser(ctx, h.keycloak, r.Header.Get("Authorization"))
+	if err != nil {
+		util.WriteErrorResponse(w, "User not authorized to use this function: " + err.Error(), http.StatusUnauthorized)
+		return
+	}
+
 	idStr := params.ByName("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
@@ -65,7 +79,7 @@ func (h *handler) GetTask(w http.ResponseWriter, r *http.Request, params httprou
 		return
 	}
 
-	rows, errQuery := h.database.Query("SELECT id, description, difficulty, done FROM tasks WHERE id = $1", id)
+	rows, errQuery := h.database.Query("SELECT id, description, difficulty, done FROM tasks WHERE id = $1 AND owner_identifier = $2", id, userInfo.PreferredUsername)
 	if errQuery != nil {
 		util.WriteErrorResponse(w, "Error retrieving tasks from database: " + errQuery.Error(), http.StatusInternalServerError)
 		return
@@ -97,6 +111,12 @@ func (h *handler) CreateTask(w http.ResponseWriter, r *http.Request, _ httproute
 	default:
 	}
 
+	userInfo, err := util.AuthorizeUser(ctx, h.keycloak, r.Header.Get("Authorization"))
+	if err != nil {
+		util.WriteErrorResponse(w, "User not authorized to use this function: " + err.Error(), http.StatusUnauthorized)
+		return
+	}
+
 	reqBodyBytes, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		util.WriteErrorResponse(w, "Error parsing request body: " + err.Error(), http.StatusBadRequest)
@@ -110,7 +130,7 @@ func (h *handler) CreateTask(w http.ResponseWriter, r *http.Request, _ httproute
 		return
 	}
 
-	_, errQuery := h.database.Exec("INSERT INTO tasks (description, difficulty, done) VALUES ($1, $2, $3)", taskReq.Description, taskReq.Difficulty, taskReq.Done)
+	_, errQuery := h.database.Exec("INSERT INTO tasks (description, difficulty, done, owner_identifier) VALUES ($1, $2, $3, $4)", taskReq.Description, taskReq.Difficulty, taskReq.Done, userInfo.PreferredUsername)
 	if errQuery != nil {
 		util.WriteErrorResponse(w, "Error storing task to database: " + errQuery.Error(), http.StatusInternalServerError)
 		return
